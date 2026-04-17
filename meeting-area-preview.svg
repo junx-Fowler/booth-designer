@@ -1,0 +1,57 @@
+<svg width="900" height="700" viewBox="0 0 900 700" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="140" y1="120" x2="760" y2="620" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2A2A2A"/>
+      <stop offset="1" stop-color="#171717"/>
+    </linearGradient>
+    <linearGradient id="floor" x1="130" y1="200" x2="760" y2="540" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F1E2C6"/>
+      <stop offset="1" stop-color="#D3B88E"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+    <style>
+      .caption { font: 700 28px Aptos, Segoe UI, sans-serif; fill: #ffffff; }
+      .meta { font: 400 20px Aptos, Segoe UI, sans-serif; fill: rgba(255,255,255,0.82); }
+    </style>
+  </defs>
+
+  <rect width="900" height="700" fill="url(#bg)"/>
+  <polygon points="95,240 632,146 786,238 252,338" fill="url(#floor)"/>
+
+  <g filter="url(#shadow)">
+    <ellipse cx="428" cy="334" rx="86" ry="28" fill="#FFFFFF"/>
+    <line x1="427" y1="336" x2="427" y2="468" stroke="#B78756" stroke-width="10" stroke-linecap="round"/>
+    <line x1="427" y1="458" x2="392" y2="538" stroke="#B78756" stroke-width="7" stroke-linecap="round"/>
+    <line x1="427" y1="458" x2="465" y2="538" stroke="#B78756" stroke-width="7" stroke-linecap="round"/>
+    <line x1="427" y1="458" x2="428" y2="540" stroke="#B78756" stroke-width="7" stroke-linecap="round"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <ellipse cx="305" cy="410" rx="56" ry="18" fill="#FBFBFB"/>
+    <line x1="305" y1="420" x2="278" y2="520" stroke="#BA8957" stroke-width="7" stroke-linecap="round"/>
+    <line x1="305" y1="420" x2="332" y2="520" stroke="#BA8957" stroke-width="7" stroke-linecap="round"/>
+    <line x1="304" y1="452" x2="305" y2="478" stroke="#222222" stroke-width="5" stroke-linecap="round"/>
+    <line x1="275" y1="478" x2="335" y2="478" stroke="#222222" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <ellipse cx="560" cy="410" rx="56" ry="18" fill="#FBFBFB"/>
+    <line x1="560" y1="420" x2="533" y2="520" stroke="#BA8957" stroke-width="7" stroke-linecap="round"/>
+    <line x1="560" y1="420" x2="587" y2="520" stroke="#BA8957" stroke-width="7" stroke-linecap="round"/>
+    <line x1="559" y1="452" x2="560" y2="478" stroke="#222222" stroke-width="5" stroke-linecap="round"/>
+    <line x1="530" y1="478" x2="590" y2="478" stroke="#222222" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <ellipse cx="425" cy="495" rx="56" ry="18" fill="#FBFBFB"/>
+    <line x1="425" y1="505" x2="398" y2="605" stroke="#BA8957" stroke-width="7" stroke-linecap="round"/>
+    <line x1="425" y1="505" x2="452" y2="605" stroke="#BA8957" stroke-width="7" stroke-linecap="round"/>
+    <line x1="424" y1="537" x2="425" y2="563" stroke="#222222" stroke-width="5" stroke-linecap="round"/>
+    <line x1="395" y1="563" x2="455" y2="563" stroke="#222222" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <text x="80" y="92" class="caption">Meeting Area Set Preview</text>
+  <text x="80" y="124" class="meta">One 600mm diameter high-top table at 1050mm height with three 750mm stools.</text>
+</svg>

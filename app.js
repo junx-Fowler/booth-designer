@@ -18,6 +18,21 @@ const ROOM_PARAM = "room";
 const EXPORT_PADDING_FEET = 1;
 const EXPORT_PIXELS_PER_FOOT = 160;
 const EXPORT_MAX_DIMENSION = 12000;
+const MM_PER_FOOT = 304.8;
+const DISPLAY_HEIGHT_FT = 900 / MM_PER_FOOT;
+const LIGHT_FRAME_HEIGHT_FT = 2000 / MM_PER_FOOT;
+const LIGHT_FRAME_DEPTH_FT = 4 / INCHES_PER_FOOT;
+const CELL_OF_FUTURE_HEIGHT_FT = 8;
+const SIGN_WIDTH_RATIO = 0.44;
+const SIGN_HEIGHT_FT = 1.55;
+const SIGN_BOTTOM_CLEARANCE_FT = 4.2;
+const MEETING_TABLE_DIAMETER_FT = 600 / MM_PER_FOOT;
+const MEETING_TABLE_HEIGHT_FT = 1050 / MM_PER_FOOT;
+const MEETING_CHAIR_HEIGHT_FT = 750 / MM_PER_FOOT;
+const PREVIEW_VIEWBOX = { width: 1200, height: 420 };
+const PREVIEW_SCALE_X = 14;
+const PREVIEW_SCALE_Y = 7.4;
+const PREVIEW_SCALE_Z = 22;
 
 function getDefaultSections() {
   return [
@@ -74,6 +89,7 @@ const collaboration = {
 };
 
 const svg = document.getElementById("designerSvg");
+const preview3dSvg = document.getElementById("preview3dSvg");
 const cameraLayer = document.getElementById("cameraLayer");
 const boothLayer = document.getElementById("boothLayer");
 const sectionsLayer = document.getElementById("sectionsLayer");
@@ -569,6 +585,594 @@ function updateDraftOverlay() {
   overlayLayer.appendChild(draft);
 }
 
+function createSvgElement(tagName, attributes = {}) {
+  const element = document.createElementNS(SVG_NS, tagName);
+  Object.entries(attributes).forEach(([name, value]) => {
+    if (value !== undefined && value !== null) {
+      element.setAttribute(name, String(value));
+    }
+  });
+  return element;
+}
+
+function pointsToPath(points) {
+  return points.map((point) => `${point.x},${point.y}`).join(" ");
+}
+
+function render3dPreview() {
+  if (!preview3dSvg) {
+    return;
+  }
+
+  preview3dSvg.innerHTML = "";
+  preview3dSvg.setAttribute("viewBox", `0 0 ${PREVIEW_VIEWBOX.width} ${PREVIEW_VIEWBOX.height}`);
+
+  const defs = createSvgElement("defs");
+  defs.appendChild(
+    createSvgElement("linearGradient", { id: "floorGradient3d", x1: "0%", y1: "0%", x2: "100%", y2: "100%" })
+  );
+  defs.lastChild.appendChild(createSvgElement("stop", { offset: "0%", "stop-color": "#efdfc1" }));
+  defs.lastChild.appendChild(createSvgElement("stop", { offset: "100%", "stop-color": "#d4bb95" }));
+  defs.appendChild(
+    createSvgElement("linearGradient", { id: "wallBannerGradient3d", x1: "0%", y1: "0%", x2: "100%", y2: "0%" })
+  );
+  defs.lastChild.appendChild(createSvgElement("stop", { offset: "0%", "stop-color": "#1e4088" }));
+  defs.lastChild.appendChild(createSvgElement("stop", { offset: "100%", "stop-color": "#305fbc" }));
+  preview3dSvg.appendChild(defs);
+
+  const scene = createSvgElement("g");
+  preview3dSvg.appendChild(scene);
+
+  const originX = PREVIEW_VIEWBOX.width / 2 + (state.booth.length - state.booth.width) * PREVIEW_SCALE_X * 0.18;
+  const originY = PREVIEW_VIEWBOX.height * 0.82;
+
+  const project = (x, y, z = 0) => ({
+    x: originX + (x - y) * PREVIEW_SCALE_X,
+    y: originY + (x + y) * PREVIEW_SCALE_Y - z * PREVIEW_SCALE_Z,
+  });
+
+  const appendPolygon = (points, attributes) => {
+    scene.appendChild(createSvgElement("polygon", { points: pointsToPath(points), ...attributes }));
+  };
+
+  const appendLine = (start, end, attributes) => {
+    scene.appendChild(
+      createSvgElement("line", { x1: start.x, y1: start.y, x2: end.x, y2: end.y, ...attributes })
+    );
+  };
+
+  const appendEllipse = (center, rx, ry, attributes) => {
+    scene.appendChild(createSvgElement("ellipse", { cx: center.x, cy: center.y, rx, ry, ...attributes }));
+  };
+
+  const appendText = (point, label, attributes = {}) => {
+    const text = createSvgElement("text", {
+      x: point.x,
+      y: point.y,
+      fill: "#f7f2ea",
+      "font-size": 12,
+      "font-family": 'Aptos, "Segoe UI", sans-serif',
+      "font-weight": 700,
+      "text-anchor": "middle",
+      ...attributes,
+    });
+    text.textContent = label;
+    scene.appendChild(text);
+  };
+
+  const renderPrism = (x, y, width, depth, height, colors, selected = false, zBase = 0) => {
+    const p000 = project(x, y, zBase);
+    const p100 = project(x + width, y, zBase);
+    const p110 = project(x + width, y + depth, zBase);
+    const p010 = project(x, y + depth, zBase);
+    const p001 = project(x, y, zBase + height);
+    const p101 = project(x + width, y, zBase + height);
+    const p111 = project(x + width, y + depth, zBase + height);
+    const p011 = project(x, y + depth, zBase + height);
+    const stroke = selected ? "#ffe28a" : colors.stroke;
+
+    appendPolygon([p010, p110, p111, p011], {
+      fill: colors.front,
+      stroke,
+      "stroke-width": selected ? 2.4 : 1.2,
+    });
+    appendPolygon([p100, p110, p111, p101], {
+      fill: colors.side,
+      stroke,
+      "stroke-width": selected ? 2.4 : 1.2,
+    });
+    appendPolygon([p001, p101, p111, p011], {
+      fill: colors.top,
+      stroke,
+      "stroke-width": selected ? 2.4 : 1.2,
+    });
+  };
+
+  const renderLightFrame = (section, selected) => {
+    const postWidth = Math.min(0.16, section.width * 0.12);
+    const rearY = section.y + Math.max(section.height - LIGHT_FRAME_DEPTH_FT, 0.08);
+    const colors = { top: "#6f95eb", front: "#2b5dc1", side: "#1f4a9c", stroke: "#244b8f" };
+
+    renderPrism(section.x, rearY, postWidth, LIGHT_FRAME_DEPTH_FT, LIGHT_FRAME_HEIGHT_FT, colors, selected);
+    renderPrism(section.x + section.width - postWidth, rearY, postWidth, LIGHT_FRAME_DEPTH_FT, LIGHT_FRAME_HEIGHT_FT, colors, selected);
+    renderPrism(section.x, rearY, section.width, LIGHT_FRAME_DEPTH_FT, 0.18, colors, selected, LIGHT_FRAME_HEIGHT_FT - 0.18);
+
+    const signWidth = Math.min(section.width * SIGN_WIDTH_RATIO, section.width - postWidth * 1.8);
+    const signX = section.x + section.width - signWidth - postWidth * 0.65;
+    const signY = rearY + LIGHT_FRAME_DEPTH_FT * 0.18;
+    const signColors = { top: "#ffffff", front: "#f5f7fb", side: "#dfe8f6", stroke: "#2b5dc1" };
+    renderPrism(
+      signX,
+      signY,
+      signWidth,
+      LIGHT_FRAME_DEPTH_FT * 0.8,
+      LIGHT_FRAME_HEIGHT_FT - SIGN_BOTTOM_CLEARANCE_FT,
+      signColors,
+      selected,
+      SIGN_BOTTOM_CLEARANCE_FT
+    );
+  };
+
+  const renderDisplaySurface = (section, selected) => {
+    const baseColors = { top: "#ffffff", front: "#ececec", side: "#d8d8d8", stroke: "#c7c7c7" };
+    renderPrism(section.x, section.y, section.width, section.height, DISPLAY_HEIGHT_FT, baseColors, selected);
+
+    const faceWidth = section.width * 0.68;
+    const faceHeight = DISPLAY_HEIGHT_FT * 0.46;
+    const faceX = section.x + (section.width - faceWidth) / 2;
+    const faceY = section.y + section.height - 0.01;
+    const faceBase = project(faceX, faceY, DISPLAY_HEIGHT_FT * 0.18);
+    const faceRight = project(faceX + faceWidth, faceY, DISPLAY_HEIGHT_FT * 0.18);
+    const faceTopRight = project(faceX + faceWidth, faceY, DISPLAY_HEIGHT_FT * 0.18 + faceHeight);
+    const faceTopLeft = project(faceX, faceY, DISPLAY_HEIGHT_FT * 0.18 + faceHeight);
+    appendPolygon([faceBase, faceRight, faceTopRight, faceTopLeft], {
+      fill: "#fbfdff",
+      stroke: selected ? "#ffe28a" : "#e7edf4",
+      "stroke-width": selected ? 2 : 1,
+    });
+  };
+
+  const renderMonitor = (centerX, centerY, zBase, selected) => {
+    const standBottom = project(centerX, centerY, zBase);
+    const standTop = project(centerX, centerY, zBase + 0.32);
+    appendLine(standBottom, standTop, { stroke: "#1b1b1b", "stroke-width": 3 });
+    const screenBottomLeft = project(centerX - 0.8, centerY, zBase + 0.55);
+    const screenBottomRight = project(centerX + 0.8, centerY, zBase + 0.55);
+    const screenTopRight = project(centerX + 0.8, centerY, zBase + 1.45);
+    const screenTopLeft = project(centerX - 0.8, centerY, zBase + 1.45);
+    appendPolygon([screenBottomLeft, screenBottomRight, screenTopRight, screenTopLeft], {
+      fill: "#121212",
+      stroke: selected ? "#ffe28a" : "#0f0f0f",
+      "stroke-width": selected ? 2 : 1,
+    });
+    appendPolygon(
+      [
+        project(centerX - 0.66, centerY, zBase + 0.7),
+        project(centerX + 0.66, centerY, zBase + 0.7),
+        project(centerX + 0.66, centerY, zBase + 1.33),
+        project(centerX - 0.66, centerY, zBase + 1.33),
+      ],
+      { fill: "#8cd0ff", opacity: 0.9 }
+    );
+  };
+
+  const renderMachineBlock = (section, selected) => {
+    const isSquare = Math.abs(section.width - section.height) < 0.55;
+    const machineWidth = Math.min(section.width * 0.28, isSquare ? 1.05 : 1.4);
+    const machineDepth = Math.min(section.height * 0.28, 1.1);
+    const machineX = section.x + section.width * 0.2;
+    const machineY = section.y + section.height * 0.2;
+    const machineColors = { top: "#bfc5cd", front: "#8d949d", side: "#767d86", stroke: "#666d75" };
+    renderPrism(machineX, machineY, machineWidth, machineDepth, DISPLAY_HEIGHT_FT * 1.24, machineColors, selected, DISPLAY_HEIGHT_FT);
+
+    if (!isSquare) {
+      renderMonitor(section.x + section.width * 0.67, section.y + section.height * 0.47, DISPLAY_HEIGHT_FT, selected);
+      const keyboard = [
+        project(section.x + section.width * 0.58, section.y + section.height * 0.62, DISPLAY_HEIGHT_FT + 0.02),
+        project(section.x + section.width * 0.9, section.y + section.height * 0.62, DISPLAY_HEIGHT_FT + 0.02),
+        project(section.x + section.width * 0.9, section.y + section.height * 0.84, DISPLAY_HEIGHT_FT + 0.02),
+        project(section.x + section.width * 0.58, section.y + section.height * 0.84, DISPLAY_HEIGHT_FT + 0.02),
+      ];
+      appendPolygon(keyboard, { fill: "#101010", stroke: "#080808", "stroke-width": 1 });
+    }
+  };
+
+  const renderDisplay = (section, selected) => {
+    renderDisplaySurface(section, selected);
+    renderLightFrame(section, selected);
+    renderMachineBlock(section, selected);
+  };
+
+  const renderWideDisplay = (section, selected) => {
+    renderDisplaySurface(section, selected);
+    renderLightFrame(section, selected);
+    const moduleCount = Math.max(2, Math.round(section.width / 2.8));
+    for (let index = 0; index < moduleCount; index += 1) {
+      const moduleWidth = Math.min(section.width / (moduleCount + 1), 1.1);
+      const moduleX = section.x + 0.5 + index * (section.width - 1) / Math.max(moduleCount - 1, 1);
+      renderPrism(
+        moduleX,
+        section.y + section.height * 0.2,
+        moduleWidth,
+        Math.min(0.95, section.height * 0.4),
+        DISPLAY_HEIGHT_FT * 0.72,
+        { top: "#d7dde3", front: "#b4bcc5", side: "#99a2ad", stroke: "#86909a" },
+        selected,
+        DISPLAY_HEIGHT_FT
+      );
+    }
+  };
+
+  const renderAxiom = (section, selected) => {
+    const frameColors = { top: "#a3abb5", front: "#717985", side: "#5e6672", stroke: "#525965" };
+    const accentColors = { top: "#5677d6", front: "#315cc1", side: "#274b9a", stroke: "#24478f" };
+    const baseHeight = 2.5;
+    const bridgeHeight = 3.4;
+
+    renderPrism(section.x + 0.45, section.y + 0.45, section.width - 0.9, section.height - 0.9, baseHeight, {
+      top: "#4a4f57",
+      front: "#1f2328",
+      side: "#171b20",
+      stroke: "#101418",
+    }, selected);
+
+    renderPrism(section.x + 0.65, section.y + 0.65, section.width - 1.3, section.height - 1.3, 0.32, {
+      top: "#5d6169",
+      front: "#8d939b",
+      side: "#7a828c",
+      stroke: "#656d77",
+    }, selected, baseHeight);
+
+    renderPrism(section.x + section.width - 1.05, section.y + 0.52, 0.62, section.height - 1.04, bridgeHeight, frameColors, selected, baseHeight);
+    renderPrism(section.x + 0.85, section.y + 0.68, 0.44, 0.44, bridgeHeight - 0.2, frameColors, selected, baseHeight);
+    renderPrism(section.x + section.width * 0.32, section.y + 0.7, section.width * 0.46, 0.34, 0.34, frameColors, selected, baseHeight + bridgeHeight - 0.34);
+
+    renderPrism(section.x + section.width * 0.46, section.y + 1.05, 0.34, 0.34, 2.7, frameColors, selected, baseHeight + 0.2);
+
+    const headX = section.x + section.width * 0.41;
+    const headY = section.y + 0.9;
+    renderPrism(headX, headY, 1.18, 0.72, 1.26, {
+      top: "#8f96a1",
+      front: "#626975",
+      side: "#4f5662",
+      stroke: "#444b56",
+    }, selected, baseHeight + 2.04);
+    renderPrism(headX + 0.22, headY + 0.18, 0.74, 0.32, 0.74, accentColors, selected, baseHeight + 2.18);
+
+    appendLine(
+      project(section.x + section.width * 0.57, section.y + 1.22, baseHeight + 2.06),
+      project(section.x + section.width * 0.57, section.y + 1.28, baseHeight + 0.86),
+      { stroke: selected ? "#ffe28a" : "#1a1a1a", "stroke-width": 2.4, "stroke-linecap": "round" }
+    );
+
+    const tableTop = [
+      project(section.x + 0.95, section.y + 0.95, baseHeight + 0.36),
+      project(section.x + section.width - 1.25, section.y + 0.95, baseHeight + 0.36),
+      project(section.x + section.width - 1.25, section.y + section.height - 1.1, baseHeight + 0.36),
+      project(section.x + 0.95, section.y + section.height - 1.1, baseHeight + 0.36),
+    ];
+    appendPolygon(tableTop, { fill: "#14171b", stroke: "#363b42", "stroke-width": 1.2 });
+
+    renderPrism(section.x + 1.55, section.y + 1.4, 0.86, 0.56, 0.22, accentColors, selected, baseHeight + 0.38);
+
+    const armStart = project(section.x + 0.5, section.y + section.height * 0.65, 1.5);
+    const armMid = project(section.x - 1.45, section.y + section.height * 0.74, 2.3);
+    const armEnd = project(section.x - 1.65, section.y + section.height * 0.74, 4.6);
+    appendLine(armStart, armMid, { stroke: selected ? "#ffe28a" : "#20242a", "stroke-width": 4, "stroke-linecap": "round" });
+    appendLine(armMid, armEnd, { stroke: selected ? "#ffe28a" : "#20242a", "stroke-width": 4, "stroke-linecap": "round" });
+    const screenBottomLeft = project(section.x - 2.6, section.y + section.height * 0.8, 3.25);
+    const screenBottomRight = project(section.x - 0.95, section.y + section.height * 0.8, 3.25);
+    const screenTopRight = project(section.x - 0.95, section.y + section.height * 0.8, 5.25);
+    const screenTopLeft = project(section.x - 2.6, section.y + section.height * 0.8, 5.25);
+    appendPolygon([screenBottomLeft, screenBottomRight, screenTopRight, screenTopLeft], {
+      fill: "#1e1f24",
+      stroke: selected ? "#ffe28a" : "#0d0f12",
+      "stroke-width": 1.4,
+    });
+    appendPolygon(
+      [
+        project(section.x - 2.42, section.y + section.height * 0.8, 3.48),
+        project(section.x - 1.1, section.y + section.height * 0.8, 3.48),
+        project(section.x - 1.1, section.y + section.height * 0.8, 5.05),
+        project(section.x - 2.42, section.y + section.height * 0.8, 5.05),
+      ],
+      { fill: "#9ed2ff", opacity: 0.85 }
+    );
+  };
+
+  const renderExtol = (section, selected) => {
+    const darkFrame = { top: "#7e8792", front: "#5e6670", side: "#474f5a", stroke: "#414852" };
+    const blueShell = { top: "#4f73d3", front: "#1f49ae", side: "#183c90", stroke: "#163684" };
+    const stageHeight = 0.95;
+    const bodyHeight = 6.6;
+
+    renderPrism(section.x + 0.75, section.y + 0.4, section.width * 0.36, section.height - 0.8, stageHeight, {
+      top: "#444b54",
+      front: "#1d2127",
+      side: "#14181d",
+      stroke: "#101419",
+    }, selected);
+    renderPrism(section.x + 0.92, section.y + 0.58, section.width * 0.31, section.height - 1.16, 0.24, {
+      top: "#2b2f35",
+      front: "#828a94",
+      side: "#727b86",
+      stroke: "#656d77",
+    }, selected, stageHeight);
+
+    renderPrism(section.x + 0.92, section.y + 0.68, section.width * 0.31, section.height - 1.36, bodyHeight, darkFrame, selected, stageHeight + 0.24);
+    renderPrism(section.x + 1.02, section.y + 0.74, section.width * 0.27, section.height - 1.48, 1.18, blueShell, selected, stageHeight + 0.24);
+    renderPrism(section.x + 1.02, section.y + 0.74, section.width * 0.27, section.height - 1.48, 1.28, blueShell, selected, stageHeight + bodyHeight - 0.9);
+
+    renderPrism(section.x + section.width * 0.49, section.y + 0.9, 0.34, section.height - 1.8, 4.5, darkFrame, selected, stageHeight + 1.2);
+    appendLine(
+      project(section.x + section.width * 0.66, section.y + section.height * 0.52, stageHeight + bodyHeight - 1.35),
+      project(section.x + section.width * 0.66, section.y + section.height * 0.52, stageHeight + 1.55),
+      { stroke: selected ? "#ffe28a" : "#121314", "stroke-width": 2.4, "stroke-linecap": "round" }
+    );
+
+    const monitorArmBase = project(section.x + section.width * 0.94, section.y + section.height * 0.62, 2.1);
+    const monitorArmMid = project(section.x + section.width + 0.55, section.y + section.height * 0.65, 3.25);
+    const monitorArmTop = project(section.x + section.width + 0.7, section.y + section.height * 0.65, 5.5);
+    appendLine(monitorArmBase, monitorArmMid, { stroke: selected ? "#ffe28a" : "#20242a", "stroke-width": 4, "stroke-linecap": "round" });
+    appendLine(monitorArmMid, monitorArmTop, { stroke: selected ? "#ffe28a" : "#20242a", "stroke-width": 4, "stroke-linecap": "round" });
+    const topScreen = [
+      project(section.x + section.width + 0.15, section.y + section.height * 0.74, 4.85),
+      project(section.x + section.width + 1.95, section.y + section.height * 0.74, 4.85),
+      project(section.x + section.width + 1.95, section.y + section.height * 0.74, 6.45),
+      project(section.x + section.width + 0.15, section.y + section.height * 0.74, 6.45),
+    ];
+    const bottomScreen = [
+      project(section.x + section.width + 0.18, section.y + section.height * 0.74, 2.6),
+      project(section.x + section.width + 1.85, section.y + section.height * 0.74, 2.6),
+      project(section.x + section.width + 1.85, section.y + section.height * 0.74, 4.2),
+      project(section.x + section.width + 0.18, section.y + section.height * 0.74, 4.2),
+    ];
+    [topScreen, bottomScreen].forEach((screen) => {
+      appendPolygon(screen, {
+        fill: "#1d1f24",
+        stroke: selected ? "#ffe28a" : "#0d0f12",
+        "stroke-width": 1.4,
+      });
+    });
+    appendPolygon(
+      [
+        project(section.x + section.width + 0.35, section.y + section.height * 0.74, 5.05),
+        project(section.x + section.width + 1.75, section.y + section.height * 0.74, 5.05),
+        project(section.x + section.width + 1.75, section.y + section.height * 0.74, 6.2),
+        project(section.x + section.width + 0.35, section.y + section.height * 0.74, 6.2),
+      ],
+      { fill: "#c6e5ff", opacity: 0.85 }
+    );
+  };
+
+  const renderCellOfFuture = (section, selected) => {
+    const frameColors = { top: "#cdd3db", front: "#9ea6b0", side: "#7b838e", stroke: "#68707b" };
+    const topColors = { top: "#f5f7fb", front: "#dfe4ea", side: "#c8ced6", stroke: "#b8bfc8" };
+
+    renderPrism(section.x, section.y, section.width, section.height, 0.18, frameColors, selected, 0);
+    renderPrism(section.x, section.y, section.width, section.height, 0.18, frameColors, selected, DISPLAY_HEIGHT_FT - 0.18);
+
+    [
+      [section.x, section.y],
+      [section.x + section.width - 0.18, section.y],
+      [section.x, section.y + section.height - 0.18],
+      [section.x + section.width - 0.18, section.y + section.height - 0.18],
+    ].forEach(([x, y]) => {
+      renderPrism(x, y, 0.18, 0.18, CELL_OF_FUTURE_HEIGHT_FT, frameColors, selected);
+    });
+
+    renderPrism(section.x, section.y, section.width, 0.18, 0.18, frameColors, selected, CELL_OF_FUTURE_HEIGHT_FT - 0.18);
+    renderPrism(section.x, section.y + section.height - 0.18, section.width, 0.18, 0.18, frameColors, selected, CELL_OF_FUTURE_HEIGHT_FT - 0.18);
+    renderPrism(section.x, section.y, 0.18, section.height, 0.18, frameColors, selected, CELL_OF_FUTURE_HEIGHT_FT - 0.18);
+    renderPrism(section.x + section.width - 0.18, section.y, 0.18, section.height, 0.18, frameColors, selected, CELL_OF_FUTURE_HEIGHT_FT - 0.18);
+
+    renderPrism(section.x, section.y, section.width, section.height, 0.12, topColors, selected, DISPLAY_HEIGHT_FT);
+
+    const drawerWidth = Math.min(1.45, section.width * 0.24);
+    const drawerDepth = Math.min(1.08, section.height * 0.88);
+    const drawerHeight = DISPLAY_HEIGHT_FT - 0.18;
+    renderPrism(section.x + 0.24, section.y + 0.12, drawerWidth, drawerDepth, drawerHeight, frameColors, selected);
+    renderPrism(section.x + section.width - drawerWidth - 0.24, section.y + 0.12, drawerWidth, drawerDepth, drawerHeight, frameColors, selected);
+
+    for (let index = 1; index <= 3; index += 1) {
+      const z = 0.2 + index * (drawerHeight / 4);
+      const leftHandleStart = project(section.x + 0.46, section.y + drawerDepth, z);
+      const leftHandleEnd = project(section.x + drawerWidth + 0.02, section.y + drawerDepth, z);
+      const rightHandleStart = project(section.x + section.width - drawerWidth + 0.2, section.y + drawerDepth, z);
+      const rightHandleEnd = project(section.x + section.width - 0.46, section.y + drawerDepth, z);
+      appendLine(leftHandleStart, leftHandleEnd, { stroke: selected ? "#ffe28a" : "#dbe2ea", "stroke-width": 1.8 });
+      appendLine(rightHandleStart, rightHandleEnd, { stroke: selected ? "#ffe28a" : "#dbe2ea", "stroke-width": 1.8 });
+    }
+
+    const gantryY = section.y + section.height - 0.22;
+    renderPrism(section.x + 0.34, gantryY, section.width - 0.68, 0.16, 0.16, frameColors, selected, DISPLAY_HEIGHT_FT + 2.45);
+    renderPrism(section.x + 0.4, gantryY, 0.16, 0.16, 2.6, frameColors, selected, DISPLAY_HEIGHT_FT + 0.28);
+    renderPrism(section.x + section.width - 0.56, gantryY, 0.16, 0.16, 2.6, frameColors, selected, DISPLAY_HEIGHT_FT + 0.28);
+
+    const screenBottomLeft = project(section.x + 1.2, section.y + section.height - 0.02, DISPLAY_HEIGHT_FT + 1.45);
+    const screenBottomRight = project(section.x + section.width - 1.2, section.y + section.height - 0.02, DISPLAY_HEIGHT_FT + 1.45);
+    const screenTopRight = project(section.x + section.width - 1.2, section.y + section.height - 0.02, DISPLAY_HEIGHT_FT + 3.55);
+    const screenTopLeft = project(section.x + 1.2, section.y + section.height - 0.02, DISPLAY_HEIGHT_FT + 3.55);
+    appendPolygon([screenBottomLeft, screenBottomRight, screenTopRight, screenTopLeft], {
+      fill: "rgba(165, 222, 255, 0.20)",
+      stroke: selected ? "#ffe28a" : "rgba(190, 232, 255, 0.7)",
+      "stroke-width": selected ? 2.1 : 1.2,
+    });
+
+    [
+      { x: section.x + 1.4, y: section.y + 0.54, height: 1.78 },
+      { x: section.x + section.width - 1.65, y: section.y + 0.7, height: 1.52 },
+    ].forEach((probe) => {
+      renderPrism(probe.x, probe.y, 0.52, 0.52, 0.26, { top: "#8f98a1", front: "#6e7680", side: "#5d6670", stroke: "#535b65" }, selected, DISPLAY_HEIGHT_FT);
+      renderPrism(probe.x + 0.16, probe.y + 0.16, 0.12, 0.12, probe.height, { top: "#a3acb8", front: "#8993a0", side: "#747f8b", stroke: "#67717d" }, selected, DISPLAY_HEIGHT_FT + 0.26);
+      appendLine(
+        project(probe.x + 0.22, probe.y + 0.22, DISPLAY_HEIGHT_FT + 0.26 + probe.height),
+        project(probe.x + 0.22, probe.y + 0.48, DISPLAY_HEIGHT_FT + 0.5),
+        { stroke: "#2555b6", "stroke-width": 2.2, "stroke-linecap": "round" }
+      );
+    });
+
+    renderMonitor(section.x + section.width * 0.5, section.y + section.height * 0.56, DISPLAY_HEIGHT_FT, selected);
+  };
+
+  const renderCloset = (section, selected) => {
+    renderPrism(
+      section.x,
+      section.y,
+      section.width,
+      section.height,
+      LIGHT_FRAME_HEIGHT_FT + 0.9,
+      { top: "#fcfcfc", front: "#ececec", side: "#d8d8d8", stroke: "#c6c6c6" },
+      selected
+    );
+  };
+
+  const renderBackdrop = (section, selected) => {
+    renderPrism(
+      section.x,
+      section.y,
+      section.width,
+      section.height,
+      LIGHT_FRAME_HEIGHT_FT + 0.35,
+      { top: "#6f95eb", front: "url(#wallBannerGradient3d)", side: "#244c9d", stroke: "#23498a" },
+      selected
+    );
+  };
+
+  const renderMeetingArea = (section, selected) => {
+    const zone = [
+      project(section.x, section.y, 0.01),
+      project(section.x + section.width, section.y, 0.01),
+      project(section.x + section.width, section.y + section.height, 0.01),
+      project(section.x, section.y + section.height, 0.01),
+    ];
+    appendPolygon(zone, {
+      fill: selected ? "rgba(255, 226, 138, 0.18)" : "rgba(255,255,255,0.06)",
+      stroke: selected ? "#ffe28a" : "rgba(255,255,255,0.12)",
+      "stroke-width": selected ? 2.4 : 1,
+    });
+
+    const centerX = section.x + section.width / 2;
+    const centerY = section.y + section.height / 2;
+    const tableCenter = project(centerX, centerY, MEETING_TABLE_HEIGHT_FT);
+    appendEllipse(tableCenter, MEETING_TABLE_DIAMETER_FT * PREVIEW_SCALE_X * 0.62, MEETING_TABLE_DIAMETER_FT * PREVIEW_SCALE_Y * 1.05, {
+      fill: "#fefefe",
+      stroke: "#e6e6e6",
+      "stroke-width": 1.4,
+    });
+
+    [
+      [0, 0.12],
+      [2.09, 0.24],
+      [4.18, 0.18],
+    ].forEach(([angle, offset]) => {
+      const legStart = project(centerX + Math.cos(angle) * offset, centerY + Math.sin(angle) * offset, MEETING_TABLE_HEIGHT_FT - 0.05);
+      const legEnd = project(centerX + Math.cos(angle) * 0.55, centerY + Math.sin(angle) * 0.55, 0);
+      appendLine(legStart, legEnd, { stroke: "#b88a59", "stroke-width": 3.4, "stroke-linecap": "round" });
+    });
+
+    const stoolRadius = Math.min(section.width, section.height) * 0.33;
+    [Math.PI * 1.08, Math.PI * 1.72, Math.PI * 0.12].forEach((angle) => {
+      const chairX = centerX + Math.cos(angle) * stoolRadius;
+      const chairY = centerY + Math.sin(angle) * stoolRadius;
+      const seatCenter = project(chairX, chairY, MEETING_CHAIR_HEIGHT_FT);
+      appendEllipse(seatCenter, 22, 9.5, {
+        fill: "#fefefe",
+        stroke: selected ? "#ffe28a" : "#dfdfdf",
+        "stroke-width": selected ? 1.8 : 1,
+      });
+      [
+        [0.18, 0.16],
+        [-0.18, 0.18],
+        [0, -0.22],
+      ].forEach(([dx, dy]) => {
+        appendLine(
+          project(chairX + dx, chairY + dy, MEETING_CHAIR_HEIGHT_FT - 0.06),
+          project(chairX + dx * 1.85, chairY + dy * 1.85, 0),
+          { stroke: "#b88a59", "stroke-width": 2.7, "stroke-linecap": "round" }
+        );
+      });
+      appendLine(
+        project(chairX - 0.22, chairY + 0.1, 0.86),
+        project(chairX + 0.22, chairY + 0.1, 0.86),
+        { stroke: "#2b2b2b", "stroke-width": 2 }
+      );
+    });
+  };
+
+  const getSectionKind = (section) => {
+    if (/meeting area/i.test(section.name)) {
+      return "meeting";
+    }
+    if (/axiom/i.test(section.name)) {
+      return "axiom";
+    }
+    if (/extol/i.test(section.name)) {
+      return "extol";
+    }
+    if (/cell of future/i.test(section.name)) {
+      return "cell";
+    }
+    if (/backdrop/i.test(section.name)) {
+      return "backdrop";
+    }
+    if (/closet/i.test(section.name)) {
+      return "closet";
+    }
+    if (/s65t|s145|cell of future|auto/i.test(section.name) || section.width >= 6) {
+      return "wide";
+    }
+    return "display";
+  };
+
+  const floor = [
+    project(0, 0, 0),
+    project(state.booth.width, 0, 0),
+    project(state.booth.width, state.booth.length, 0),
+    project(0, state.booth.length, 0),
+  ];
+  appendPolygon(floor, { fill: "url(#floorGradient3d)", stroke: "#c7a470", "stroke-width": 2 });
+
+  const border = [
+    project(0, 0, 0.01),
+    project(state.booth.width, 0, 0.01),
+    project(state.booth.width, state.booth.length, 0.01),
+    project(0, state.booth.length, 0.01),
+  ];
+  appendPolygon(border, { fill: "none", stroke: "rgba(255,255,255,0.18)", "stroke-width": 1 });
+
+  state.sections
+    .slice()
+    .sort((left, right) => left.x + left.y + left.height - (right.x + right.y + right.height))
+    .forEach((section) => {
+      const selected = section.id === state.selectedSectionId;
+      const kind = getSectionKind(section);
+
+      if (kind === "backdrop") {
+        renderBackdrop(section, selected);
+      } else if (kind === "closet") {
+        renderCloset(section, selected);
+      } else if (kind === "axiom") {
+        renderAxiom(section, selected);
+      } else if (kind === "extol") {
+        renderExtol(section, selected);
+      } else if (kind === "cell") {
+        renderCellOfFuture(section, selected);
+      } else if (kind === "meeting") {
+        renderMeetingArea(section, selected);
+      } else if (kind === "wide") {
+        renderWideDisplay(section, selected);
+      } else {
+        renderDisplay(section, selected);
+      }
+
+      appendText(project(section.x + section.width / 2, section.y + section.height + 0.7, 0), section.name, {
+        fill: selected ? "#ffe28a" : "rgba(255,255,255,0.92)",
+        "font-size": selected ? 13 : 12,
+      });
+    });
+}
+
 function renderCamera() {
   cameraLayer.setAttribute("transform", `translate(${state.camera.x} ${state.camera.y}) scale(${state.camera.zoom})`);
 }
@@ -584,6 +1188,7 @@ function render() {
   renderCamera();
   renderBooth();
   renderSections();
+  render3dPreview();
   renderHud();
 }
 
