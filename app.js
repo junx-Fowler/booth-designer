@@ -13,17 +13,44 @@ const INCHES_PER_FOOT = 12;
 const SNAP = 1 / INCHES_PER_FOOT;
 const EDGE_HIT_PX = 10;
 const CLICK_WINDOW_MS = 320;
-const STORAGE_KEY = "booth-designer-state-v2";
+const STORAGE_KEY = "booth-designer-state-v3";
 const ROOM_PARAM = "room";
 const EXPORT_PADDING_FEET = 1;
 const EXPORT_PIXELS_PER_FOOT = 160;
 const EXPORT_MAX_DIMENSION = 12000;
 
+function getDefaultSections() {
+  return [
+    { id: 1, name: "Closet", color: "#2d6cdf", x: 0, y: 0, width: 3, height: 4 },
+    { id: 2, name: "Backdrop", color: "#2d6cdf", x: 3, y: 0, width: 1, height: 20 },
+    { id: 3, name: "S65T & S145-P", color: "#2d6cdf", x: 4, y: 1.1, width: 10, height: 5 },
+    { id: 4, name: "S25T", color: "#2d6cdf", x: 14.1, y: 1.1, width: 4, height: roundDimension(28 / INCHES_PER_FOOT) },
+    { id: 5, name: "Closet", color: "#2d6cdf", x: 0, y: 16, width: 3, height: 4 },
+    { id: 6, name: "Axiom", color: "#2d6cdf", x: 4, y: 13, width: 6, height: 6 },
+    { id: 7, name: "Trimos HG1", color: "#2d6cdf", x: 17, y: 7.7, width: 4, height: roundDimension(28 / INCHES_PER_FOOT) },
+    { id: 8, name: "Trimos HG2", color: "#2d6cdf", x: 21, y: 7.7, width: 4, height: roundDimension(28 / INCHES_PER_FOOT) },
+    { id: 9, name: "Trimos HB1", color: "#2d6cdf", x: 17, y: 11.7, width: 4, height: roundDimension(28 / INCHES_PER_FOOT) },
+    { id: 10, name: "Trimos HB2", color: "#2d6cdf", x: 21, y: 11.7, width: 4, height: roundDimension(28 / INCHES_PER_FOOT) },
+    { id: 11, name: "Baty FV", color: "#2d6cdf", x: 20, y: 16.7, width: 4, height: roundDimension(28 / INCHES_PER_FOOT) },
+    { id: 12, name: "Baty FH", color: "#2d6cdf", x: 24.2, y: 16.7, width: 4, height: roundDimension(28 / INCHES_PER_FOOT) },
+    { id: 13, name: "Bowers BG1", color: "#2d6cdf", x: 30, y: 16.7, width: 4, height: roundDimension(28 / INCHES_PER_FOOT) },
+    { id: 14, name: "Bowers BG2", color: "#2d6cdf", x: 34, y: 16.7, width: 4, height: roundDimension(28 / INCHES_PER_FOOT) },
+    { id: 15, name: "Measur3D", color: "#2d6cdf", x: 30, y: 1.1, width: 4, height: 4 },
+    { id: 16, name: "ZCAT", color: "#2d6cdf", x: 36, y: 1.1, width: 4, height: 4 },
+    { id: 17, name: "Meeting Area 1", color: "#2d6cdf", x: 30.2, y: 7.1, width: 6, height: 6 },
+    { id: 18, name: "Meeting Area 2", color: "#2d6cdf", x: 38.4, y: 7.1, width: 6, height: 6 },
+    { id: 19, name: "Cell of Future", color: "#2d6cdf", x: 40, y: 16, width: 8, height: 3 },
+    { id: 20, name: "ZCAT Auto", color: "#2d6cdf", x: 49.2, y: 1.1, width: roundDimension(46 / INCHES_PER_FOOT), height: roundDimension(40 / INCHES_PER_FOOT) },
+    { id: 21, name: "Fastener Auto", color: "#2d6cdf", x: 56.2, y: 1.1, width: roundDimension(46 / INCHES_PER_FOOT), height: roundDimension(40 / INCHES_PER_FOOT) },
+    { id: 22, name: "Extol & Bore Auto", color: "#2d6cdf", x: 51.7, y: 15.7, width: roundDimension(100 / INCHES_PER_FOOT), height: roundDimension(40 / INCHES_PER_FOOT) },
+  ].map((section) => normalizeSection(section));
+}
+
 const defaultState = () => ({
   booth: { width: 60, length: 20 },
-  sections: [],
+  sections: getDefaultSections(),
   selectedSectionId: null,
-  nextSectionId: 1,
+  nextSectionId: 23,
   camera: { x: 80, y: 80, zoom: 18 },
   interaction: null,
   colorTargetId: null,
@@ -184,7 +211,15 @@ function loadSavedState() {
       return;
     }
 
-    applySnapshot(JSON.parse(raw));
+    const parsed = JSON.parse(raw);
+    applySnapshot(parsed);
+    if (!Array.isArray(parsed?.sections) || parsed.sections.length === 0) {
+      state.sections = getDefaultSections();
+      state.nextSectionId = Math.max(
+        state.nextSectionId,
+        state.sections.reduce((maxId, section) => Math.max(maxId, section.id + 1), 1)
+      );
+    }
     setSaveStatus("Autosave restored from your previous session.");
   } catch (error) {
     console.error(error);
