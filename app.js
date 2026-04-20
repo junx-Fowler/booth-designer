@@ -33,6 +33,9 @@ const PREVIEW_VIEWBOX = { width: 1200, height: 420 };
 const PREVIEW_SCALE_X = 14;
 const PREVIEW_SCALE_Y = 7.4;
 const PREVIEW_SCALE_Z = 22;
+const PREVIEW_PADDING = 56;
+const PREVIEW_MIN_ZOOM = 1;
+const PREVIEW_MAX_ZOOM = 3.4;
 
 function getDefaultSections() {
   return [
@@ -67,13 +70,19 @@ const defaultState = () => ({
   selectedSectionId: null,
   nextSectionId: 23,
   camera: { x: 80, y: 80, zoom: 18 },
+  previewCamera: { panX: 0, panY: 0, zoom: 1 },
   interaction: null,
+  previewInteraction: null,
   colorTargetId: null,
   lastRightClick: { id: null, time: 0 },
   lastLeftClick: { id: null, time: 0 },
 });
 
 const state = defaultState();
+const preview3dRuntime = {
+  baseView: null,
+  activeView: null,
+};
 
 const collaboration = {
   roomId: null,
@@ -189,6 +198,7 @@ function buildSnapshot() {
     sections: state.sections.map((section) => ({ ...section })),
     nextSectionId: state.nextSectionId,
     camera: { ...state.camera },
+    previewCamera: { ...state.previewCamera },
   };
 }
 
@@ -205,6 +215,12 @@ function applySnapshot(snapshot) {
     state.camera.x = Number(snapshot.camera.x) || 80;
     state.camera.y = Number(snapshot.camera.y) || 80;
     state.camera.zoom = clamp(Number(snapshot.camera.zoom) || 18, 6, 64);
+  }
+
+  if (snapshot?.previewCamera && Number.isFinite(snapshot.previewCamera.zoom)) {
+    state.previewCamera.panX = Number(snapshot.previewCamera.panX) || 0;
+    state.previewCamera.panY = Number(snapshot.previewCamera.panY) || 0;
+    state.previewCamera.zoom = clamp(Number(snapshot.previewCamera.zoom) || 1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
   }
 
   fitSectionsToBooth();
@@ -599,13 +615,136 @@ function pointsToPath(points) {
   return points.map((point) => `${point.x},${point.y}`).join(" ");
 }
 
+function createPreviewBounds() {
+  return {
+    minX: Infinity,
+    minY: Infinity,
+    maxX: -Infinity,
+    maxY: -Infinity,
+  };
+}
+
+function includePreviewPoint(bounds, point) {
+  if (!bounds || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    return;
+  }
+
+  bounds.minX = Math.min(bounds.minX, point.x);
+  bounds.minY = Math.min(bounds.minY, point.y);
+  bounds.maxX = Math.max(bounds.maxX, point.x);
+  bounds.maxY = Math.max(bounds.maxY, point.y);
+}
+
+function includePreviewBox(bounds, left, top, right, bottom) {
+  includePreviewPoint(bounds, { x: left, y: top });
+  includePreviewPoint(bounds, { x: right, y: bottom });
+}
+
+function fitPreviewView(bounds) {
+  const fallback = {
+    x: 0,
+    y: 0,
+    width: PREVIEW_VIEWBOX.width,
+    height: PREVIEW_VIEWBOX.height,
+  };
+
+  if (!bounds || !Number.isFinite(bounds.minX) || !Number.isFinite(bounds.maxX)) {
+    return fallback;
+  }
+
+  let x = bounds.minX - PREVIEW_PADDING;
+  let y = bounds.minY - PREVIEW_PADDING;
+  let width = Math.max(bounds.maxX - bounds.minX + PREVIEW_PADDING * 2, PREVIEW_VIEWBOX.width * 0.12);
+  let height = Math.max(bounds.maxY - bounds.minY + PREVIEW_PADDING * 2, PREVIEW_VIEWBOX.height * 0.12);
+  const targetAspect = PREVIEW_VIEWBOX.width / PREVIEW_VIEWBOX.height;
+
+  if (width / height > targetAspect) {
+    const nextHeight = width / targetAspect;
+    y -= (nextHeight - height) / 2;
+    height = nextHeight;
+  } else {
+    const nextWidth = height * targetAspect;
+    x -= (nextWidth - width) / 2;
+    width = nextWidth;
+  }
+
+  return { x, y, width, height };
+}
+
+function getPreviewView(baseView = preview3dRuntime.baseView) {
+  if (!baseView) {
+    return fitPreviewView();
+  }
+
+  state.previewCamera.zoom = clamp(state.previewCamera.zoom || 1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
+
+  const width = baseView.width / state.previewCamera.zoom;
+  const height = baseView.height / state.previewCamera.zoom;
+  const slackX = width * 0.16;
+  const slackY = height * 0.16;
+  const limitX = Math.max(0, (baseView.width - width) / 2 + slackX);
+  const limitY = Math.max(0, (baseView.height - height) / 2 + slackY);
+
+  state.previewCamera.panX = clamp(state.previewCamera.panX || 0, -limitX, limitX);
+  state.previewCamera.panY = clamp(state.previewCamera.panY || 0, -limitY, limitY);
+
+  const centerX = baseView.x + baseView.width / 2 + state.previewCamera.panX;
+  const centerY = baseView.y + baseView.height / 2 + state.previewCamera.panY;
+  return {
+    x: centerX - width / 2,
+    y: centerY - height / 2,
+    width,
+    height,
+  };
+}
+
+function getPreviewPointer(clientX, clientY) {
+  const activeView = preview3dRuntime.activeView;
+  const rect = preview3dSvg?.getBoundingClientRect();
+  if (!activeView || !rect || rect.width <= 0 || rect.height <= 0) {
+    return null;
+  }
+
+  const ratioX = (clientX - rect.left) / rect.width;
+  const ratioY = (clientY - rect.top) / rect.height;
+  return {
+    ratioX,
+    ratioY,
+    worldX: activeView.x + ratioX * activeView.width,
+    worldY: activeView.y + ratioY * activeView.height,
+    rect,
+  };
+}
+
+function zoomPreviewTo(nextZoom, anchorClientX, anchorClientY) {
+  const baseView = preview3dRuntime.baseView;
+  const pointer = getPreviewPointer(anchorClientX, anchorClientY);
+  if (!baseView || !pointer) {
+    state.previewCamera.zoom = clamp(nextZoom, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
+    return;
+  }
+
+  state.previewCamera.zoom = clamp(nextZoom, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
+  const targetWidth = baseView.width / state.previewCamera.zoom;
+  const targetHeight = baseView.height / state.previewCamera.zoom;
+  const targetX = pointer.worldX - pointer.ratioX * targetWidth;
+  const targetY = pointer.worldY - pointer.ratioY * targetHeight;
+  state.previewCamera.panX = targetX + targetWidth / 2 - (baseView.x + baseView.width / 2);
+  state.previewCamera.panY = targetY + targetHeight / 2 - (baseView.y + baseView.height / 2);
+}
+
+function resetPreviewCamera() {
+  state.previewCamera.panX = 0;
+  state.previewCamera.panY = 0;
+  state.previewCamera.zoom = 1;
+}
+
 function render3dPreview() {
   if (!preview3dSvg) {
     return;
   }
 
   preview3dSvg.innerHTML = "";
-  preview3dSvg.setAttribute("viewBox", `0 0 ${PREVIEW_VIEWBOX.width} ${PREVIEW_VIEWBOX.height}`);
 
   const defs = createSvgElement("defs");
   defs.appendChild(
@@ -622,6 +761,7 @@ function render3dPreview() {
 
   const scene = createSvgElement("g");
   preview3dSvg.appendChild(scene);
+  const bounds = createPreviewBounds();
 
   const originX = PREVIEW_VIEWBOX.width / 2 + (state.booth.length - state.booth.width) * PREVIEW_SCALE_X * 0.18;
   const originY = PREVIEW_VIEWBOX.height * 0.82;
@@ -632,16 +772,20 @@ function render3dPreview() {
   });
 
   const appendPolygon = (points, attributes) => {
+    points.forEach((point) => includePreviewPoint(bounds, point));
     scene.appendChild(createSvgElement("polygon", { points: pointsToPath(points), ...attributes }));
   };
 
   const appendLine = (start, end, attributes) => {
+    includePreviewPoint(bounds, start);
+    includePreviewPoint(bounds, end);
     scene.appendChild(
       createSvgElement("line", { x1: start.x, y1: start.y, x2: end.x, y2: end.y, ...attributes })
     );
   };
 
   const appendEllipse = (center, rx, ry, attributes) => {
+    includePreviewBox(bounds, center.x - rx, center.y - ry, center.x + rx, center.y + ry);
     scene.appendChild(createSvgElement("ellipse", { cx: center.x, cy: center.y, rx, ry, ...attributes }));
   };
 
@@ -657,6 +801,15 @@ function render3dPreview() {
       ...attributes,
     });
     text.textContent = label;
+    const fontSize = Number(attributes["font-size"] || 12);
+    const estimatedWidth = Math.max(fontSize * 1.8, label.length * fontSize * 0.52);
+    includePreviewBox(
+      bounds,
+      point.x - estimatedWidth / 2,
+      point.y - fontSize * 1.2,
+      point.x + estimatedWidth / 2,
+      point.y + fontSize * 0.4
+    );
     scene.appendChild(text);
   };
 
@@ -754,6 +907,255 @@ function render3dPreview() {
       ],
       { fill: "#8cd0ff", opacity: 0.9 }
     );
+  };
+
+  const renderFloorZone = (section, selected, fill = "rgba(255,255,255,0.06)") => {
+    const zone = [
+      project(section.x, section.y, 0.01),
+      project(section.x + section.width, section.y, 0.01),
+      project(section.x + section.width, section.y + section.height, 0.01),
+      project(section.x, section.y + section.height, 0.01),
+    ];
+    appendPolygon(zone, {
+      fill: selected ? "rgba(255, 226, 138, 0.16)" : fill,
+      stroke: selected ? "#ffe28a" : "rgba(255,255,255,0.14)",
+      "stroke-width": selected ? 2.4 : 1,
+    });
+  };
+
+  const renderDemoTable = (x, y, width, depth, height, selected, palette = {}) => {
+    const topColors = {
+      top: palette.top || "#f9f7f2",
+      front: palette.front || "#e6e1d6",
+      side: palette.side || "#d8d0c3",
+      stroke: palette.stroke || "#c8beae",
+    };
+    const legColors = {
+      top: palette.legTop || "#a3a6ab",
+      front: palette.legFront || "#7a7f86",
+      side: palette.legSide || "#656a72",
+      stroke: palette.legStroke || "#5c6169",
+    };
+
+    renderPrism(x, y, width, depth, 0.14, topColors, selected, height);
+    const legInset = Math.min(Math.max(width, depth) * 0.08, 0.18);
+    const legWidth = Math.min(Math.min(width, depth) * 0.14, 0.12);
+    [
+      [x + legInset, y + legInset],
+      [x + width - legInset - legWidth, y + legInset],
+      [x + legInset, y + depth - legInset - legWidth],
+      [x + width - legInset - legWidth, y + depth - legInset - legWidth],
+    ].forEach(([legX, legY]) => {
+      renderPrism(legX, legY, legWidth, legWidth, height, legColors, selected);
+    });
+  };
+
+  const renderSylvacSideMonitor = (cabinetX, cabinetY, cabinetWidth, cabinetDepth, side, zBase, selected, size = {}) => {
+    const direction = side === "left" ? -1 : 1;
+    const reach = size.reach || 1.15;
+    const span = size.span || 1.55;
+    const lift = size.lift || 1.8;
+    const screenHeight = size.screenHeight || 1.55;
+    const base = project(cabinetX + (direction > 0 ? cabinetWidth : 0), cabinetY + cabinetDepth * 0.6, zBase + 0.62);
+    const elbow = project(cabinetX + (direction > 0 ? cabinetWidth + reach * 0.52 : -reach * 0.52), cabinetY + cabinetDepth * 0.62, zBase + 1.26);
+    const post = project(cabinetX + (direction > 0 ? cabinetWidth + reach : -reach), cabinetY + cabinetDepth * 0.62, zBase + lift);
+
+    appendLine(base, elbow, { stroke: selected ? "#ffe28a" : "#2a2d31", "stroke-width": 4, "stroke-linecap": "round" });
+    appendLine(elbow, post, { stroke: selected ? "#ffe28a" : "#2a2d31", "stroke-width": 4, "stroke-linecap": "round" });
+
+    const left = cabinetX + (direction > 0 ? cabinetWidth + reach - 0.02 : -reach - span + 0.02);
+    const right = left + span;
+    const screenY = cabinetY + cabinetDepth * 0.72;
+    const bottom = zBase + lift - 0.76;
+    const top = bottom + screenHeight;
+    appendPolygon(
+      [
+        project(left, screenY, bottom),
+        project(right, screenY, bottom),
+        project(right, screenY, top),
+        project(left, screenY, top),
+      ],
+      {
+        fill: "#1c1f23",
+        stroke: selected ? "#ffe28a" : "#0d0f12",
+        "stroke-width": selected ? 1.8 : 1.2,
+      }
+    );
+    appendPolygon(
+      [
+        project(left + 0.14, screenY, bottom + 0.18),
+        project(right - 0.14, screenY, bottom + 0.18),
+        project(right - 0.14, screenY, top - 0.18),
+        project(left + 0.14, screenY, top - 0.18),
+      ],
+      { fill: "#9bd3ff", opacity: 0.86 }
+    );
+  };
+
+  const renderSylvacCabinet = ({
+    x,
+    y,
+    width,
+    depth,
+    height,
+    label,
+    selected,
+    zBase = 0,
+    sideMonitor = null,
+    accent = "#f0c334",
+    probe = "#38d07a",
+  }) => {
+    const bodyColors = { top: "#2a2c31", front: "#474b52", side: "#32353a", stroke: "#26292d" };
+    const panelColors = { top: "#8b9199", front: "#626870", side: "#525860", stroke: "#474c53" };
+    const plinthHeight = Math.min(0.48, height * 0.14);
+    const innerHeight = height - plinthHeight;
+    const towerWidth = Math.min(width * 0.26, 0.7);
+
+    renderPrism(x, y, width, depth, plinthHeight, bodyColors, selected, zBase);
+    renderPrism(x, y, towerWidth, depth, innerHeight, panelColors, selected, zBase + plinthHeight);
+    renderPrism(x + width - towerWidth, y, towerWidth, depth, innerHeight, panelColors, selected, zBase + plinthHeight);
+    renderPrism(x, y, width, depth * 0.18, innerHeight, bodyColors, selected, zBase + plinthHeight);
+    renderPrism(x, y, width, depth, Math.min(0.42, innerHeight * 0.12), bodyColors, selected, zBase + height - 0.42);
+
+    const cavityLeft = x + towerWidth + 0.14;
+    const cavityRight = x + width - towerWidth - 0.14;
+    const cavityBottom = zBase + plinthHeight + 0.34;
+    const cavityTop = zBase + height - 0.8;
+    const faceY = y + depth;
+    appendPolygon(
+      [
+        project(cavityLeft, faceY, cavityBottom),
+        project(cavityRight, faceY, cavityBottom),
+        project(cavityRight, faceY, cavityTop),
+        project(cavityLeft, faceY, cavityTop),
+      ],
+      {
+        fill: "#0d0f12",
+        stroke: selected ? "#ffe28a" : "#0a0b0d",
+        "stroke-width": selected ? 1.4 : 0.8,
+      }
+    );
+
+    appendLine(
+      project((cavityLeft + cavityRight) / 2, y + depth * 0.46, cavityBottom + 0.18),
+      project((cavityLeft + cavityRight) / 2, y + depth * 0.46, cavityTop - 0.28),
+      { stroke: probe, "stroke-width": 3.2, "stroke-linecap": "round" }
+    );
+
+    appendPolygon(
+      [
+        project(x + 0.22, faceY, zBase + plinthHeight + innerHeight * 0.66),
+        project(x + towerWidth - 0.14, faceY, zBase + plinthHeight + innerHeight * 0.66),
+        project(x + towerWidth - 0.14, faceY, zBase + plinthHeight + innerHeight * 0.84),
+        project(x + 0.22, faceY, zBase + plinthHeight + innerHeight * 0.84),
+      ],
+      { fill: accent, stroke: "#d9aa19", "stroke-width": 0.8 }
+    );
+
+    appendPolygon(
+      [
+        project(x + width - towerWidth + 0.18, faceY, zBase + plinthHeight + innerHeight * 0.46),
+        project(x + width - 0.18, faceY, zBase + plinthHeight + innerHeight * 0.46),
+        project(x + width - 0.18, faceY, zBase + plinthHeight + innerHeight * 0.68),
+        project(x + width - towerWidth + 0.18, faceY, zBase + plinthHeight + innerHeight * 0.68),
+      ],
+      { fill: "#31353a", stroke: "#181b1f", "stroke-width": 0.8 }
+    );
+
+    appendEllipse(project(x + width - 0.34, faceY, zBase + plinthHeight + innerHeight * 0.4), 5, 5, {
+      fill: "#d44338",
+      stroke: "#8e251d",
+      "stroke-width": 1,
+    });
+
+    appendText(project(x + width * 0.52, y + depth + 0.08, zBase + plinthHeight * 0.5), label, {
+      fill: accent,
+      "font-size": 10,
+    });
+
+    if (sideMonitor) {
+      renderSylvacSideMonitor(x, y, width, depth, sideMonitor, zBase + plinthHeight + 0.12, selected);
+    }
+  };
+
+  const renderSylvacLineup = (section, selected) => {
+    renderFloorZone(section, selected, "rgba(255,255,255,0.05)");
+
+    const gap = 0.35;
+    const machineWidth = 2.2;
+    const machineDepth = 2.25;
+    const tableWidth = 48 / INCHES_PER_FOOT;
+    const tableDepth = 28 / INCHES_PER_FOOT;
+    const totalWidth = machineWidth * 2 + tableWidth + gap * 2;
+    const scale = Math.min(1, (section.width - 0.9) / totalWidth, (section.height - 0.7) / Math.max(machineDepth, tableDepth));
+    const scaledMachineWidth = machineWidth * scale;
+    const scaledMachineDepth = machineDepth * scale;
+    const scaledTableWidth = tableWidth * scale;
+    const scaledTableDepth = tableDepth * scale;
+    const lineupWidth = scaledMachineWidth * 2 + scaledTableWidth + gap * 2;
+    const startX = section.x + (section.width - lineupWidth) / 2;
+    const startY = section.y + (section.height - Math.max(scaledMachineDepth, scaledTableDepth)) / 2;
+
+    renderSylvacCabinet({
+      x: startX,
+      y: startY,
+      width: scaledMachineWidth,
+      depth: scaledMachineDepth,
+      height: 7.1,
+      label: "S65T",
+      selected,
+      sideMonitor: "right",
+    });
+
+    renderDemoTable(
+      startX + scaledMachineWidth + gap,
+      startY + (scaledMachineDepth - scaledTableDepth) / 2,
+      scaledTableWidth,
+      scaledTableDepth,
+      2.55,
+      selected
+    );
+
+    renderSylvacCabinet({
+      x: startX + scaledMachineWidth + gap + scaledTableWidth + gap,
+      y: startY,
+      width: scaledMachineWidth,
+      depth: scaledMachineDepth,
+      height: 7.4,
+      label: "S145-P",
+      selected,
+      sideMonitor: "right",
+      probe: "#b8c1cd",
+    });
+  };
+
+  const renderSylvacS25 = (section, selected) => {
+    renderFloorZone(section, selected, "rgba(255,255,255,0.05)");
+
+    const tableWidth = Math.min(section.width * 0.6, 2.2);
+    const tableDepth = Math.min(section.height * 0.72, 1.65);
+    const tableX = section.x + (section.width - tableWidth) / 2;
+    const tableY = section.y + (section.height - tableDepth) / 2;
+    const tableHeight = 2.45;
+    renderDemoTable(tableX, tableY, tableWidth, tableDepth, tableHeight, selected, {
+      top: "#faf7f1",
+      front: "#e7dfd2",
+      side: "#d8cfbf",
+      stroke: "#c6bba9",
+    });
+
+    const machineWidth = tableWidth * 0.72;
+    const machineDepth = tableDepth * 0.8;
+    renderSylvacCabinet({
+      x: tableX + (tableWidth - machineWidth) / 2,
+      y: tableY + (tableDepth - machineDepth) / 2,
+      width: machineWidth,
+      depth: machineDepth,
+      height: 4.85,
+      label: "S25T",
+      selected,
+      zBase: tableHeight + 0.14,
+    });
   };
 
   const renderMachineBlock = (section, selected) => {
@@ -1104,6 +1506,12 @@ function render3dPreview() {
     if (/meeting area/i.test(section.name)) {
       return "meeting";
     }
+    if (/s65t\s*&\s*s145|s145\s*&\s*s65t/i.test(section.name)) {
+      return "sylvac-lineup";
+    }
+    if (/s25t/i.test(section.name)) {
+      return "sylvac-s25";
+    }
     if (/axiom/i.test(section.name)) {
       return "axiom";
     }
@@ -1152,6 +1560,10 @@ function render3dPreview() {
         renderBackdrop(section, selected);
       } else if (kind === "closet") {
         renderCloset(section, selected);
+      } else if (kind === "sylvac-lineup") {
+        renderSylvacLineup(section, selected);
+      } else if (kind === "sylvac-s25") {
+        renderSylvacS25(section, selected);
       } else if (kind === "axiom") {
         renderAxiom(section, selected);
       } else if (kind === "extol") {
@@ -1171,6 +1583,13 @@ function render3dPreview() {
         "font-size": selected ? 13 : 12,
       });
     });
+
+  preview3dRuntime.baseView = fitPreviewView(bounds);
+  preview3dRuntime.activeView = getPreviewView(preview3dRuntime.baseView);
+  preview3dSvg.setAttribute(
+    "viewBox",
+    `${preview3dRuntime.activeView.x} ${preview3dRuntime.activeView.y} ${preview3dRuntime.activeView.width} ${preview3dRuntime.activeView.height}`
+  );
 }
 
 function renderCamera() {
@@ -1224,10 +1643,14 @@ function resetLayout() {
   state.selectedSectionId = null;
   state.nextSectionId = fresh.nextSectionId;
   state.camera = fresh.camera;
+  state.previewCamera = fresh.previewCamera;
   state.interaction = null;
+  state.previewInteraction = null;
   state.colorTargetId = null;
   state.lastRightClick = fresh.lastRightClick;
   state.lastLeftClick = fresh.lastLeftClick;
+  preview3dRuntime.baseView = null;
+  preview3dRuntime.activeView = null;
   closeColorPicker();
   saveAndRender("Layout reset and saved.");
 }
@@ -1493,6 +1916,81 @@ async function exportLayoutAsImage() {
     exportImageBtn.disabled = false;
   }
 }
+
+preview3dSvg.addEventListener(
+  "wheel",
+  (event) => {
+    event.preventDefault();
+    const zoomFactor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+    zoomPreviewTo(state.previewCamera.zoom * zoomFactor, event.clientX, event.clientY);
+    persistState();
+    render3dPreview();
+  },
+  { passive: false }
+);
+
+preview3dSvg.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || !preview3dRuntime.activeView) {
+    return;
+  }
+
+  event.preventDefault();
+  state.previewInteraction = {
+    pointerId: event.pointerId,
+    startClient: { x: event.clientX, y: event.clientY },
+    startPan: { panX: state.previewCamera.panX, panY: state.previewCamera.panY },
+    startView: { ...preview3dRuntime.activeView },
+  };
+  preview3dSvg.setPointerCapture(event.pointerId);
+});
+
+preview3dSvg.addEventListener("pointermove", (event) => {
+  if (!state.previewInteraction || state.previewInteraction.pointerId !== event.pointerId) {
+    return;
+  }
+
+  event.preventDefault();
+  const rect = state.previewInteraction.startView.width > 0 ? preview3dSvg.getBoundingClientRect() : null;
+  if (!rect || rect.width <= 0 || rect.height <= 0) {
+    return;
+  }
+
+  const deltaX = event.clientX - state.previewInteraction.startClient.x;
+  const deltaY = event.clientY - state.previewInteraction.startClient.y;
+  state.previewCamera.panX = state.previewInteraction.startPan.panX - deltaX * (state.previewInteraction.startView.width / rect.width);
+  state.previewCamera.panY = state.previewInteraction.startPan.panY - deltaY * (state.previewInteraction.startView.height / rect.height);
+  render3dPreview();
+});
+
+preview3dSvg.addEventListener("pointerup", (event) => {
+  if (!state.previewInteraction || state.previewInteraction.pointerId !== event.pointerId) {
+    return;
+  }
+
+  if (preview3dSvg.hasPointerCapture(event.pointerId)) {
+    preview3dSvg.releasePointerCapture(event.pointerId);
+  }
+  state.previewInteraction = null;
+  persistState();
+});
+
+preview3dSvg.addEventListener("pointercancel", (event) => {
+  if (!state.previewInteraction || state.previewInteraction.pointerId !== event.pointerId) {
+    return;
+  }
+
+  if (preview3dSvg.hasPointerCapture(event.pointerId)) {
+    preview3dSvg.releasePointerCapture(event.pointerId);
+  }
+  state.previewInteraction = null;
+  render3dPreview();
+});
+
+preview3dSvg.addEventListener("dblclick", () => {
+  resetPreviewCamera();
+  persistState();
+  render3dPreview();
+});
 
 svg.addEventListener(
   "wheel",
